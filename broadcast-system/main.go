@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"time"
 )
 
 var messageHistory []float64
@@ -23,24 +25,44 @@ func main() {
 		body := getBody(msg)
 		next := body["message"].(float64)
 
-		//we only propagate if we haven't seen the value before
+		//we only add and propagate if we haven't seen the value before
 		mu.Lock()
-		if !slices.Contains(messageHistory, next) {
+		newMessage := !slices.Contains(messageHistory, next)
+		if newMessage {
 			messageHistory = append(messageHistory, next)
+		}
+		mu.Unlock()
 
+		if newMessage {
 			// let's propagate to all neighbours given by the topology handler
 			// this only works if every node is in the same connected component
 			for _, id := range topology[n.ID()] {
+				go func() {
+					retryAmt := 0
+					//SyncRPC?
+					for retryAmt < 10 {
+						ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer cancel()
 
-				n.RPC(id, map[string]any{
-					"type":    "broadcast",
-					"message": next,
-				}, func(msg maelstrom.Message) error {
-					return nil
-				})
+						_, err := n.SyncRPC(ctx, id, map[string]any{
+							"type":    "broadcast",
+							"message": next,
+						})
+
+						if err == nil {
+							break
+						}
+
+						appendToLogFile(ErrorLog{
+							id,
+							retryAmt,
+							"error: " + err.Error(),
+						})
+						retryAmt++
+					}
+				}()
 			}
 		}
-		mu.Unlock()
 
 		delete(body, "message")
 		body["type"] = "broadcast_ok"
@@ -49,6 +71,9 @@ func main() {
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
+		mu.Lock()
+		defer mu.Unlock()
+
 		body := getBody(msg)
 
 		body["type"] = "read_ok"
@@ -69,7 +94,7 @@ func main() {
 			}
 			topology[key] = strNodes
 		}
-		_ = appendToLogFile(topology)
+		//appendToLogFile(topology)
 
 		delete(body, "topology")
 		body["type"] = "topology_ok"
@@ -90,26 +115,31 @@ func getBody(msg maelstrom.Message) map[string]any {
 	return body
 }
 
+type ErrorLog struct {
+	Dest    string
+	Retries int
+	Error   string
+}
+
 type MessageBody struct {
 	Type    string  `json:"type"`
 	Message float64 `json:"message"`
 }
 
-type BroadcastRequest struct {
-	Src  string      `json:"src"`
-	Dest string      `json:"dest"`
-	Body MessageBody `json:"body"`
-}
-
-func appendToLogFile(object any) error {
+func appendToLogFile(object any) {
 	// Open file in append mode, create if doesn't exist
 	file, err := os.OpenFile("/home/cameron/Documents/LearningProjects/GossipGlomers/broadcast-system/log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	defer file.Close()
 
 	// Marshal the map to JSON
 	data, err := json.MarshalIndent(object, "", "  ")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Write to file with newline
 	_, err = fmt.Fprintln(file, string(data))
-	return err
+	if err != nil {
+		log.Fatal(err)
+	}
 }
