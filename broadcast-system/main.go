@@ -14,35 +14,23 @@ var messageHistory []float64
 var topology map[string][]string
 var mu sync.Mutex
 
-//mu lock??
-
 func main() {
 	n := maelstrom.NewNode()
 	messageHistory = make([]float64, 0)
 	topology = make(map[string][]string)
 
-	n.Handle("sync", func(msg maelstrom.Message) error {
-		return nil
-	})
-
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
-
+		body := getBody(msg)
 		next := body["message"].(float64)
-		//we only propogate if we havent seen it
+
+		//we only propagate if we haven't seen the value before
 		mu.Lock()
 		if !slices.Contains(messageHistory, next) {
 			messageHistory = append(messageHistory, next)
 
-			//lets propagate this message to our all neighbours!
-			neighbours := n.NodeIDs()
-			for _, id := range neighbours {
-
-				//requestJSON, _ := json.Marshal(req)
-				//appendTopologyToFile(neighbours)
+			// let's propagate to all neighbours given by the topology handler
+			// this only works if every node is in the same connected component
+			for _, id := range topology[n.ID()] {
 
 				n.RPC(id, map[string]any{
 					"type":    "broadcast",
@@ -61,10 +49,7 @@ func main() {
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
+		body := getBody(msg)
 
 		body["type"] = "read_ok"
 		body["messages"] = messageHistory
@@ -73,10 +58,7 @@ func main() {
 	})
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
-			return err
-		}
+		body := getBody(msg)
 
 		topology = make(map[string][]string)
 		for key, val := range body["topology"].(map[string]interface{}) {
@@ -87,7 +69,7 @@ func main() {
 			}
 			topology[key] = strNodes
 		}
-		_ = appendTopologyToFile(topology)
+		_ = appendToLogFile(topology)
 
 		delete(body, "topology")
 		body["type"] = "topology_ok"
@@ -98,6 +80,14 @@ func main() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func getBody(msg maelstrom.Message) map[string]any {
+	var body map[string]any
+	if err := json.Unmarshal(msg.Body, &body); err != nil {
+		log.Fatal(err)
+	}
+	return body
 }
 
 type MessageBody struct {
@@ -111,13 +101,13 @@ type BroadcastRequest struct {
 	Body MessageBody `json:"body"`
 }
 
-func appendTopologyToFile(topology any) error {
+func appendToLogFile(object any) error {
 	// Open file in append mode, create if doesn't exist
 	file, err := os.OpenFile("/home/cameron/Documents/LearningProjects/GossipGlomers/broadcast-system/log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	defer file.Close()
 
 	// Marshal the map to JSON
-	data, err := json.MarshalIndent(topology, "", "  ")
+	data, err := json.MarshalIndent(object, "", "  ")
 
 	// Write to file with newline
 	_, err = fmt.Fprintln(file, string(data))
