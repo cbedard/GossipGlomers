@@ -6,19 +6,20 @@ import (
 	"fmt"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
+	"maps"
 	"os"
 	"slices"
 	"sync"
 	"time"
 )
 
-var messageHistory []float64
+var messageHistory map[float64]bool
 var topology map[string][]string
 var mu sync.Mutex
 
 func main() {
 	n := maelstrom.NewNode()
-	messageHistory = make([]float64, 0)
+	messageHistory = make(map[float64]bool)
 	topology = make(map[string][]string)
 
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
@@ -27,16 +28,17 @@ func main() {
 
 		//we only add and propagate if we haven't seen the value before
 		mu.Lock()
-		newMessage := !slices.Contains(messageHistory, next)
-		if newMessage {
-			messageHistory = append(messageHistory, next)
+		_, exists := messageHistory[next]
+		if !exists {
+			messageHistory[next] = true
 		}
 		mu.Unlock()
 
-		if newMessage {
+		if !exists && body["visited"] == nil {
 			// let's propagate to all neighbours given by the topology handler
 			// this only works if every node is in the same connected component
-			for _, id := range topology[n.ID()] {
+			for _, id := range n.NodeIDs() {
+
 				go func() {
 					retryAmt := 0
 					//SyncRPC?
@@ -47,17 +49,18 @@ func main() {
 						_, err := n.SyncRPC(ctx, id, map[string]any{
 							"type":    "broadcast",
 							"message": next,
+							"visited": "true",
 						})
 
 						if err == nil {
 							break
 						}
 
-						appendToLogFile(ErrorLog{
-							id,
-							retryAmt,
-							"error: " + err.Error(),
-						})
+						//appendToLogFile(ErrorLog{
+						//	id,
+						//	retryAmt,
+						//	"error: " + err.Error(),
+						//})
 						retryAmt++
 					}
 				}()
@@ -77,7 +80,7 @@ func main() {
 		body := getBody(msg)
 
 		body["type"] = "read_ok"
-		body["messages"] = messageHistory
+		body["messages"] = slices.Collect(maps.Keys(messageHistory))
 
 		return n.Reply(msg, body)
 	})
