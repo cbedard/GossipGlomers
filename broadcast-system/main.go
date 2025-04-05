@@ -197,7 +197,7 @@ func processBatch(n *maelstrom.Node) {
 	for _, id := range n.NodeIDs() {
 		go func(nodeID string, batch []float64) {
 			retryAmt := 0
-			for retryAmt < 5 {
+			for retryAmt < 10 {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 
 				// Send the entire batch in one request
