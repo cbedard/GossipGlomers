@@ -183,6 +183,7 @@ func processBatch(n *maelstrom.Node) {
 	// Skip if batch is empty
 	if len(messageBatch) == 0 {
 		batchInProgress = false
+		mu.Unlock()
 		return
 	}
 
