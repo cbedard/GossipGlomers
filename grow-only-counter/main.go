@@ -55,7 +55,7 @@ func main() {
 
 		body := getBody(msg)
 
-		//BS write to force consistency
+		//BS write to force k/v store consistency
 		kv.Write(context.Background(), uuid.NewString(), 0)
 
 		//contexts are shared between threads?? processes?
@@ -87,16 +87,13 @@ func atomicAddWithRetries(kv *maelstrom.KV, delta float64) {
 		if err != nil {
 			appendToLogFile(ErrorLog{i, err.Error()})
 		} else {
-			ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
-			err = kv.CompareAndSwap(ctx2, key, base, base+delta, false)
+			err = kv.CompareAndSwap(ctx, key, base, base+delta, false)
 			if err != nil {
 				appendToLogFile(ErrorLog{i, err.Error()})
 			} else {
 				cancel()
-				cancel2()
 				break
 			}
-			cancel2()
 		}
 		cancel()
 	}
