@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
 	"os"
+	"sync"
 	"time"
 )
 
 var key = "counter"
+var mu sync.Mutex
 
 func main() {
 	n := maelstrom.NewNode()
@@ -32,42 +35,39 @@ func main() {
 	})
 
 	n.Handle("add", func(msg maelstrom.Message) error {
-		body := getBody(msg)
+		mu.Lock()
+		defer mu.Unlock()
 
-		body["type"] = "add_ok"
+		body := getBody(msg)
 		delta := body["delta"].(float64)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		atomicAddWithRetries(kv, delta)
 
-		prevVal, err := kv.ReadInt(ctx, key)
-		base := float64(prevVal)
-		if err != nil {
-			fmt.Println(err)
-			panic(err)
-		}
-
-		err = kv.CompareAndSwap(ctx, key, base, base+delta, false)
-		if err != nil {
-			fmt.Println(err)
-			panic(err)
-		}
-
+		body["type"] = "add_ok"
 		delete(body, "delta")
+
 		return n.Reply(msg, body)
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
+		mu.Lock()
+		defer mu.Unlock()
+
 		body := getBody(msg)
 
-		body["type"] = "read_ok"
+		//BS write to force consistency
+		kv.Write(context.Background(), uuid.NewString(), 0)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		//contexts are shared between threads?? processes?
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-		x, _ := kv.ReadInt(ctx, "counter")
+		val, err := kv.ReadInt(ctx, "counter")
+		if err != nil {
+			appendToLogFile(ErrorLog{-1, err.Error()})
+		}
+		cancel()
 
-		body["value"] = x
+		body["value"] = val
 		body["type"] = "read_ok"
 
 		return n.Reply(msg, body)
@@ -75,6 +75,30 @@ func main() {
 
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func atomicAddWithRetries(kv *maelstrom.KV, delta float64) {
+	for i := range 50 {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+
+		prevVal, err := kv.ReadInt(ctx, key)
+		base := float64(prevVal)
+		if err != nil {
+			appendToLogFile(ErrorLog{i, err.Error()})
+		} else {
+			ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
+			err = kv.CompareAndSwap(ctx2, key, base, base+delta, false)
+			if err != nil {
+				appendToLogFile(ErrorLog{i, err.Error()})
+			} else {
+				cancel()
+				cancel2()
+				break
+			}
+			cancel2()
+		}
+		cancel()
 	}
 }
 
@@ -87,8 +111,8 @@ func getBody(msg maelstrom.Message) map[string]any {
 }
 
 type ErrorLog struct {
-	Retry int
-	Err   string
+	Type int
+	Err  string
 }
 
 func appendToLogFile(object any) {
