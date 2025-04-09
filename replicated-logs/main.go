@@ -5,9 +5,7 @@ import (
 	"fmt"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
-	"math"
 	"os"
-	"reflect"
 	"sync"
 )
 
@@ -15,7 +13,7 @@ var logs Logs
 
 func main() {
 	n := maelstrom.NewNode()
-	logs = Logs{make(map[string]*[][]float64), make(map[string]float64), 0, &sync.Mutex{}}
+	logs = Logs{make(map[string]*[][]float64), make(map[string]float64), &sync.Mutex{}}
 
 	n.Handle("send", func(msg maelstrom.Message) error {
 		body := getBody(msg)
@@ -79,17 +77,6 @@ func main() {
 }
 
 /*** UTILS ***/
-
-func getFloat(unk interface{}) (float64, error) {
-	floatType := reflect.TypeOf(float64(0))
-	v := reflect.ValueOf(unk)
-	v = reflect.Indirect(v)
-	if !v.Type().ConvertibleTo(floatType) {
-		return math.NaN(), fmt.Errorf("cannot convert %v to float64", v.Type())
-	}
-	fv := v.Convert(floatType)
-	return fv.Float(), nil
-}
 
 func ConvertToMapStringFloat64(input map[string]any) (map[string]float64, error) {
 	result := make(map[string]float64)

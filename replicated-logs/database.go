@@ -10,7 +10,6 @@ var PAGE_SIZE = 10
 type Logs struct {
 	db      map[string]*[][]float64
 	commits map[string]float64
-	counter int
 	*sync.Mutex
 }
 
@@ -18,11 +17,10 @@ func (logs *Logs) Put(key string, value float64) int {
 	logs.Lock()
 	defer logs.Unlock()
 
-	logs.counter++ //TEST global counter
-	nextOffset := logs.counter
+	nextOffset := 0
 
 	if _, ok := logs.db[key]; ok {
-		//nextOffset = len(*logs.db[key])
+		nextOffset = len(*logs.db[key])
 
 		newNode := []float64{float64(nextOffset), value}
 		*logs.db[key] = append(*logs.db[key], newNode)
@@ -42,7 +40,7 @@ func (logs *Logs) Poll(offsets map[string]float64) map[string][][]float64 {
 	for logKey, offsetValue := range offsets {
 		dbLog, ok := logs.db[logKey]
 		if !ok {
-			continue //TODO: this could be wrong any we return an empty arr
+			continue
 		}
 
 		//get initial index of offset
