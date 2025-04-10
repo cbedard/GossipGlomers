@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
@@ -13,7 +14,9 @@ var logs Logs
 
 func main() {
 	n := maelstrom.NewNode()
-	logs = Logs{make(map[string]*[][]float64), make(map[string]float64), &sync.Mutex{}}
+	kv := maelstrom.NewLinKV(n)
+
+	logs = Logs{make(map[string]*[][]float64), kv, &sync.Mutex{}}
 
 	n.Handle("send", func(msg maelstrom.Message) error {
 		body := getBody(msg)
@@ -21,13 +24,37 @@ func main() {
 		key := body["key"].(string)
 		value, _ := body["msg"].(float64)
 
-		body["offset"] = logs.Put(key, value)
+		body["offset"] = logs.Put(key, value, -1)
+
+		//we sync after we set the offset so it doesn't have to be computed on the syncing node
+		for _, id := range n.NodeIDs() {
+			if n.ID() != id {
+				body["type"] = "sync"
+				_, err := n.SyncRPC(context.Background(), id, body)
+				if err != nil {
+					appendToLogFile(ErrorMessage{fmt.Sprintf("Error syncing logs: %s", err.Error())})
+				}
+			}
+		}
 
 		//handle proper return fields
 		body["type"] = "send_ok"
 		delete(body, "key")
 		delete(body, "msg")
 
+		return n.Reply(msg, body)
+	})
+
+	n.Handle("sync", func(msg maelstrom.Message) error {
+		body := getBody(msg)
+
+		key := body["key"].(string)
+		value, _ := body["msg"].(float64)
+		offset := body["offset"].(float64)
+
+		logs.Put(key, value, int(offset))
+
+		body["type"] = "sync_ok"
 		return n.Reply(msg, body)
 	})
 
@@ -74,6 +101,7 @@ func main() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
+
 }
 
 /*** UTILS ***/
