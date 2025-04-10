@@ -11,10 +11,12 @@ import (
 )
 
 var logs Logs
+var lock *sync.Mutex
 
 func main() {
 	n := maelstrom.NewNode()
 	kv := maelstrom.NewLinKV(n)
+	lock = &sync.Mutex{}
 
 	logs = Logs{make(map[string]*[][]float64), kv, &sync.Mutex{}}
 
@@ -24,6 +26,10 @@ func main() {
 		key := body["key"].(string)
 		value, _ := body["msg"].(float64)
 
+		// we need this lock to ensure our log entry is fully synced before returning,
+		// or we can get a missing entry on "poll"
+		lock.Lock()
+		defer lock.Unlock()
 		body["offset"] = logs.Put(key, value, -1)
 
 		//we sync after we set the offset so it doesn't have to be computed on the syncing node
@@ -62,6 +68,11 @@ func main() {
 		body := getBody(msg)
 
 		offsets, _ := ConvertToMapStringFloat64(body["offsets"].(map[string]any))
+
+		// need the same log on poll as we have on send such that a commited entry+reply isn't received by the sender
+		// before the poll has returned with a complete set of entries
+		lock.Lock()
+		defer lock.Unlock()
 
 		body["msgs"] = logs.Poll(offsets)
 

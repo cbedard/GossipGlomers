@@ -14,7 +14,7 @@ type Logs struct {
 	*sync.Mutex
 }
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 50
 
 func (logs *Logs) Put(key string, value float64, nextOffset int) int {
 	logs.Lock()
@@ -60,6 +60,11 @@ func (logs *Logs) Poll(offsets map[string]float64) map[string][][]float64 {
 
 			index++
 		}
+
+		// sort keyResponse on offset val as we could have out of order
+		slices.SortFunc(keyResponse, func(a, b []float64) int {
+			return int(a[0] - b[0])
+		})
 
 		response[logKey] = keyResponse
 	}
