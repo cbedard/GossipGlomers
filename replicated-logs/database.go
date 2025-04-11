@@ -9,16 +9,17 @@ import (
 )
 
 type Logs struct {
-	db      map[string]*[][]float64
-	commits *maelstrom.KV //commits map[string]float64 -- key1 -> int for offsets, $key1 -> int for commit
-	*sync.Mutex
+	db         map[string]*[][]float64
+	kvStore    *maelstrom.KV // kvStore map[string]float64 -- key1 -> int for offsets, $key1 -> int for commit
+	dbLock     *sync.Mutex   //for logging and offsets
+	commitLock *sync.Mutex   // for offset commits in the mealstrom.kv
 }
 
 const PAGE_SIZE = 50
 
 func (logs *Logs) Put(key string, value float64, nextOffset int) int {
-	logs.Lock()
-	defer logs.Unlock()
+	logs.dbLock.Lock()
+	defer logs.dbLock.Unlock()
 
 	//non-sync call, need the offset for this item
 	if nextOffset < 0 {
@@ -37,8 +38,8 @@ func (logs *Logs) Put(key string, value float64, nextOffset int) int {
 }
 
 func (logs *Logs) Poll(offsets map[string]float64) map[string][][]float64 {
-	logs.Lock()
-	defer logs.Unlock()
+	logs.dbLock.Lock()
+	defer logs.dbLock.Unlock()
 
 	response := map[string][][]float64{} //[] = [offset, value]
 	for logKey, offsetValue := range offsets {
@@ -73,8 +74,8 @@ func (logs *Logs) Poll(offsets map[string]float64) map[string][][]float64 {
 }
 
 func (logs *Logs) Commit(offsets map[string]float64) {
-	logs.Lock()
-	defer logs.Unlock()
+	logs.commitLock.Lock()
+	defer logs.commitLock.Unlock()
 
 	for logKey, offsetValue := range offsets {
 		logs.SetNextKVValue("$"+logKey, offsetValue)
@@ -82,14 +83,14 @@ func (logs *Logs) Commit(offsets map[string]float64) {
 }
 
 func (logs *Logs) ListCommits(keys []string) map[string]float64 {
-	logs.Lock()
-	defer logs.Unlock()
+	logs.commitLock.Lock()
+	defer logs.commitLock.Unlock()
 
 	response := make(map[string]float64)
 	for _, key := range keys {
 		commitKey := "$" + key
 
-		responseValue, err := logs.commits.ReadInt(context.Background(), commitKey)
+		responseValue, err := logs.kvStore.ReadInt(context.Background(), commitKey)
 		//check for valid Read as we can get reqs for non-committed keys
 		if err == nil {
 			response[key] = float64(responseValue)
@@ -100,16 +101,16 @@ func (logs *Logs) ListCommits(keys []string) map[string]float64 {
 }
 
 func (logs *Logs) GetSetNextOffset(key string) int {
-	//this should be called from inside a function with a lock, no retries because we assume a good network
+	//this should be called from inside a function with a lock
 	maxRetries := 20
 	for range maxRetries {
-		thisCommit, _ := logs.commits.ReadInt(context.Background(), key)
-		err := logs.commits.CompareAndSwap(context.Background(), key, thisCommit, thisCommit+1, true)
+		thisCommit, _ := logs.kvStore.ReadInt(context.Background(), key)
+		err := logs.kvStore.CompareAndSwap(context.Background(), key, thisCommit, thisCommit+1, true)
 
 		if err == nil {
 			return thisCommit + 1
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 
 	appendToLogFile(ErrorMessage{"Ran out of retries on  commit update: " + key})
@@ -119,11 +120,11 @@ func (logs *Logs) GetSetNextOffset(key string) int {
 func (logs *Logs) SetNextKVValue(key string, next float64) {
 	maxRetries := 20
 	for range maxRetries {
-		thisCommit, _ := logs.commits.ReadInt(context.Background(), key)
+		thisCommit, _ := logs.kvStore.ReadInt(context.Background(), key)
 
 		//another node might set a higher value, we want to make sure twe don't overwrite again
 		if thisCommit < int(next) {
-			err := logs.commits.CompareAndSwap(context.Background(), key, thisCommit, next, true)
+			err := logs.kvStore.CompareAndSwap(context.Background(), key, thisCommit, next, true)
 
 			if err == nil {
 				return //success
@@ -131,7 +132,7 @@ func (logs *Logs) SetNextKVValue(key string, next float64) {
 		} else {
 			return //newer, higher update happened on commit key
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 
 	appendToLogFile(ErrorMessage{"Ran out of retries on KVValue update: " + key})

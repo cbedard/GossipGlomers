@@ -18,7 +18,7 @@ func main() {
 	kv := maelstrom.NewLinKV(n)
 	lock = &sync.Mutex{}
 
-	logs = Logs{make(map[string]*[][]float64), kv, &sync.Mutex{}}
+	logs = Logs{make(map[string]*[][]float64), kv, &sync.Mutex{}, &sync.Mutex{}}
 
 	n.Handle("send", func(msg maelstrom.Message) error {
 		body := getBody(msg)
@@ -69,7 +69,7 @@ func main() {
 
 		offsets, _ := ConvertToMapStringFloat64(body["offsets"].(map[string]any))
 
-		// need the same log on poll as we have on send such that a commited entry+reply isn't received by the sender
+		// need the same lock on poll as we have on send such that a commited entry+reply isn't received by the sender
 		// before the poll has returned with a complete set of entries
 		lock.Lock()
 		defer lock.Unlock()
@@ -112,7 +112,6 @@ func main() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
-
 }
 
 /*** UTILS ***/
