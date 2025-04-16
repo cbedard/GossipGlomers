@@ -6,27 +6,42 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
 	"os"
+	"sync"
 )
+
+var db map[int]int
+var mu *sync.Mutex
 
 func main() {
 	n := maelstrom.NewNode()
+	db = make(map[int]int)
+	mu = &sync.Mutex{}
 
 	n.Handle("txn", func(msg maelstrom.Message) error {
 		body := getBody(msg)
-
-		key := body["type"].(string)
-		value := body["msg_id"].(float64)
 		txn := body["txn"].([]any)
 
-		appendToLogFile(struct {
-			key string
-			val float64
-			txn []any
-		}{
-			key: key,
-			val: value,
-			txn: txn,
-		})
+		mu.Lock()
+		defer mu.Unlock()
+
+		for i := range txn {
+			transaction := txn[i].([]any)
+			operation := transaction[0].(string)
+			key := int(transaction[1].(float64))
+
+			if operation == "r" {
+				//handle read
+				val, ok := db[key]
+
+				if ok {
+					transaction[2] = val
+				}
+			} else {
+				//handle write
+				val := int(transaction[2].(float64))
+				db[key] = val
+			}
+		}
 
 		body["type"] = "txn_ok"
 		return n.Reply(msg, body)
@@ -36,6 +51,10 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+// -------  UTILS  -------
+
+//txn entry ["r", 1 (key), null] OR ["w", 1 (key), 3 (val)]
 
 func getBody(msg maelstrom.Message) map[string]any {
 	var body map[string]any
