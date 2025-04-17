@@ -3,20 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
-	"os"
 	"sync"
 	"time"
 )
 
 var db map[int]int
 var mu *sync.Mutex
-
-// GO ROUTINES ARE FIFO
-// db.go where we accept transactions on a channel
-// how do we want to sync outbound?
 
 func main() {
 	n := maelstrom.NewNode()
@@ -37,32 +31,12 @@ func main() {
 				continue
 			}
 
-			//need a new body (copy) to avoid memory overwriting from other threads
+			// need a new body (copy) to avoid memory overwriting from other threads
 			syncBody := map[string]any{"type": "sync", "txn": txn}
 
-			go func() {
-				for i := range 10 {
-					ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-
-					_, err := n.SyncRPC(ctx, neighbour, syncBody)
-
-					if err == nil {
-						cancel()
-						break
-					} else {
-						if i > 6 {
-							appendToLogFile(struct {
-								Retry int
-								Err   string
-							}{
-								Retry: i,
-								Err:   err.Error(),
-							})
-						}
-					}
-					cancel()
-				}
-			}()
+			// split sync RPC into a go func, we want to release lock immediately to avoid inter-node deadlock
+			// we only need read-commited consistency so ordering/timing can be off
+			go rpcWithRetries(n, neighbour, syncBody)
 		}
 
 		body["type"] = "txn_ok"
@@ -87,29 +61,39 @@ func main() {
 	}
 }
 
+func rpcWithRetries(n *maelstrom.Node, neighbour string, syncBody map[string]any) {
+	for range 10 { // max retries
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+
+		_, err := n.SyncRPC(ctx, neighbour, syncBody)
+
+		if err == nil {
+			cancel()
+			break
+		}
+		cancel()
+	}
+}
+
+// txn[i] = ["r", 1 (key), null] OR ["w", 1 (key), 3 (val)]
 func handleTransaction(txn []any) {
 	for i := range txn {
 		transaction := txn[i].([]any)
 		operation := transaction[0].(string)
 		key := int(transaction[1].(float64))
 
-		if operation == "r" {
-			//handle read
+		if operation == "r" { //handle read
 			val, ok := db[key]
 
 			if ok {
 				transaction[2] = val
 			}
-		} else {
-			//handle write
+		} else { //handle write
 			val := int(transaction[2].(float64))
 			db[key] = val
 		}
 	}
 }
-
-// -------  UTILS  -------
-//txn entry ["r", 1 (key), null] OR ["w", 1 (key), 3 (val)]
 
 func getBody(msg maelstrom.Message) map[string]any {
 	var body map[string]any
@@ -117,21 +101,4 @@ func getBody(msg maelstrom.Message) map[string]any {
 		log.Fatal(err)
 	}
 	return body
-}
-
-func appendToLogFile(object any) {
-	// Open file in append mode, create if doesn't exist
-	file, err := os.OpenFile("/home/cameron/Documents/LearningProjects/GossipGlomers/totally-available-transactions/log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	defer file.Close()
-
-	// Marshal the map to JSON
-	data, err := json.MarshalIndent(object, "", "  ")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = fmt.Fprintln(file, string(data))
-	if err != nil {
-		log.Fatal(err)
-	}
 }
